@@ -365,3 +365,24 @@ See [AGENTS.md](AGENTS.md) for detailed architecture and contribution guidelines
 
 ---
 
+
+
+## Download shared files
+
+Use `teams_get_shared_files` to find a File item's `webUrl`, then call
+`teams_download_file` with `url` and an absolute `outputPath` on the machine
+running the MCP server. The same tool is available through the CLI:
+
+```sh
+npm run cli -- download_file \
+  --url 'https://tenant-my.sharepoint.com/personal/user/Documents/example.md' \
+  --outputPath '/absolute/path/example.md'
+```
+
+The tool downloads raw bytes using a host-specific SharePoint token from the
+existing Teams session, refreshing it when necessary. It returns the original
+file name, saved path, byte count, content type and SHA-256. The destination
+parent directory must exist, and existing files are never overwritten.
+Downloads are limited to 50 MiB. Direct SharePoint/OneDrive for Business file
+URLs are supported; arbitrary web links and opaque sharing/preview links are not.
+The API uses SharePoint's [file REST endpoint](https://learn.microsoft.com/en-us/sharepoint/dev/sp-add-ins/working-with-folders-and-files-with-rest).

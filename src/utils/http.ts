@@ -13,6 +13,10 @@ import { type Result, ok, err } from '../types/result.js';
 
 /** Options for HTTP requests. */
 export interface HttpOptions extends Omit<RequestInit, 'signal'> {
+  /** Read raw bytes instead of interpreting Content-Type. */
+  responseType?: 'auto' | 'buffer';
+  /** Maximum response size in bytes (checked while streaming). */
+  maxResponseBytes?: number;
   /** Timeout in milliseconds (default: 30000). */
   timeoutMs?: number;
   /** Maximum retry attempts (default: 3). */
@@ -41,6 +45,8 @@ export async function httpRequest<T = unknown>(
   options: HttpOptions = {}
 ): Promise<Result<HttpResponse<T>>> {
   const {
+    responseType = 'auto',
+    maxResponseBytes,
     timeoutMs = 30000,
     maxRetries = 3,
     retryBaseDelayMs = 1000,
@@ -62,7 +68,7 @@ export async function httpRequest<T = unknown>(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const result = await fetchWithTimeout<T>(url, fetchOptions, timeoutMs);
+      const result = await fetchWithTimeout<T>(url, fetchOptions, timeoutMs, responseType, maxResponseBytes);
       
       if (result.ok) {
         return result;
@@ -117,7 +123,9 @@ export async function httpRequest<T = unknown>(
 async function fetchWithTimeout<T>(
   url: string,
   options: RequestInit,
-  timeoutMs: number
+  timeoutMs: number,
+  responseType: 'auto' | 'buffer',
+  maxResponseBytes?: number,
 ): Promise<Result<HttpResponse<T>>> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -127,8 +135,6 @@ async function fetchWithTimeout<T>(
       ...options,
       signal: controller.signal,
     });
-
-    clearTimeout(timeoutId);
 
     // Handle error responses
     if (!response.ok) {
@@ -146,7 +152,28 @@ async function fetchWithTimeout<T>(
     const contentType = response.headers.get('content-type') || '';
     let data: T;
     
-    if (contentType.includes('application/json')) {
+    if (responseType === 'buffer') {
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      const reader = response.body?.getReader();
+      if (reader) {
+        try {
+          while (true) {
+            const next = await reader.read();
+            if (next.done) break;
+            size += next.value.byteLength;
+            if (maxResponseBytes !== undefined && size > maxResponseBytes) {
+              await reader.cancel();
+              return err(createError(ErrorCode.INVALID_INPUT, `File exceeds the ${maxResponseBytes} byte download limit`));
+            }
+            chunks.push(next.value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      }
+      data = Buffer.concat(chunks) as T;
+    } else if (contentType.includes('application/json')) {
       const text = await response.text();
       data = text ? JSON.parse(text) as T : {} as T;
     } else {
@@ -187,6 +214,8 @@ async function fetchWithTimeout<T>(
       error instanceof Error ? error.message : String(error),
       { retryable: false }
     ));
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

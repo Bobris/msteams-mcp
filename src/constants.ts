@@ -259,3 +259,6 @@ export const STANDARD_EMOJIS: readonly StandardEmoji[] = [
   { key: 'makeup', description: 'Make-up 💄', category: 'other' },
   { key: 'snowangel', description: 'Snow angel', category: 'other' },
 ];
+
+/** Bound memory use for shared-file downloads (50 MiB). */
+export const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
