@@ -128,6 +128,7 @@ Different Teams APIs use different auth mechanisms:
 | **Favorites** (csa/conversationFolders) | CSA token from MSAL + `skypetoken_asm` | `extractCsaToken()` + `extractMessageAuth()` |
 | **Calendar** (mt/part/calendarView) | Skype Spaces token + `skypetoken_asm` | `extractSkypeSpacesToken()` |
 | **Transcripts** (Substrate WorkingSetFiles) | Substrate JWT + `Prefer` header | `getValidSubstrateToken()` |
+| **File Upload** (Microsoft Graph) | Graph API token (Files.ReadWrite.All) | `getValidGraphToken()` |
 | **Files** (Substrate AllFiles) | Substrate JWT + message auth for user MRI | `getValidSubstrateToken()` + `extractMessageAuth()` |
 | **Profiles** (mt/part fetchShortProfile) | Skype Spaces token + `skypetoken_asm` | `requireSkypeSpacesAuthWithConfig()` |
 
