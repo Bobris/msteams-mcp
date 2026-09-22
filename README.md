@@ -383,6 +383,11 @@ The tool downloads raw bytes using a host-specific SharePoint token from the
 existing Teams session, refreshing it when necessary. It returns the original
 file name, saved path, byte count, content type and SHA-256. The destination
 parent directory must exist, and existing files are never overwritten.
-Downloads are limited to 50 MiB. Direct SharePoint/OneDrive for Business file
+Downloads stream directly to disk with backpressure and incremental SHA-256,
+so memory usage does not grow with file size and there is no fixed size limit.
+Failed transfers remove the partial file. The HTTP timeout is 30 seconds without
+progress, rather than a total transfer deadline. For long downloads, increase
+your MCP client's tool-call timeout; available disk space and service limits
+still apply. Direct SharePoint/OneDrive for Business file
 URLs are supported; arbitrary web links and opaque sharing/preview links are not.
 The API uses SharePoint's [file REST endpoint](https://learn.microsoft.com/en-us/sharepoint/dev/sp-add-ins/working-with-folders-and-files-with-rest).

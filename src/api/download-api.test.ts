@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, stat, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { downloadFile } from './download-api.js';
 import { getSharePointToken } from '../auth/token-refresh-http.js';
 import { clearRateLimitState } from '../utils/http.js';
 import { ok } from '../types/result.js';
-import { MAX_DOWNLOAD_BYTES } from '../constants.js';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 
 vi.mock('../auth/token-refresh-http.js', () => ({ getSharePointToken: vi.fn() }));
 const url = 'https://example-my.sharepoint.com/personal/test/Documents/file.md';
@@ -17,6 +18,8 @@ beforeEach(async () => {
   clearRateLimitState();
 });
 afterEach(async () => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   await rm(directory, { recursive: true, force: true });
 });
@@ -63,14 +66,108 @@ describe('downloadFile', () => {
     expect((await downloadFile(url, output)).ok).toBe(false);
     await expect(readFile(output)).rejects.toThrow();
   });
-  it('enforces the byte limit even without Content-Length', async () => {
+  it('streams 64 MiB to disk before the response finishes and hashes all chunks', async () => {
+    const output = join(directory, 'large-file');
+    const chunk = Buffer.alloc(1024 * 1024, 0xa5);
+    const expected = createHash('sha256');
+    let sent = 0;
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(new ReadableStream({
-      start(controller) { controller.enqueue(new Uint8Array(MAX_DOWNLOAD_BYTES + 1)); controller.close(); },
+      async pull(controller) {
+        if (sent === 4) {
+          // The consumer must write before requesting the rest, not buffer to EOF.
+          expect((await stat(output)).size).toBeGreaterThanOrEqual(2 * chunk.length);
+        }
+        if (sent === 64) {
+          controller.close();
+        } else {
+          expected.update(chunk);
+          controller.enqueue(chunk);
+          sent++;
+        }
+      },
     }))));
+    const result = await downloadFile(url, output);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.size).toBe(64 * chunk.length);
+    expect((await stat(output)).size).toBe(result.value.size);
+    expect(result.value.sha256).toBe(expected.digest('hex'));
+    const actual = createHash('sha256');
+    for await (const bytes of createReadStream(output)) actual.update(bytes);
+    expect(result.value.sha256).toBe(actual.digest('hex'));
+  });
+
+  it('removes a partially written file after a network interruption without replaying the request', async () => {
+    let sent = 0;
+    const fetchMock = vi.fn().mockImplementation(() => new Response(new ReadableStream({
+      pull(controller) {
+        if (sent++ < 3) controller.enqueue(Buffer.from('partial data'));
+        else controller.error(new Error('ECONNRESET'));
+      },
+    })));
+    vi.stubGlobal('fetch', fetchMock);
     const output = join(directory, 'file');
     const result = await downloadFile(url, output);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.message).toContain('download limit');
-    await expect(readFile(output)).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(stat(output)).rejects.toThrow();
+  });
+
+  it('cancels the response and removes the partial file if writing fails', async () => {
+    const output = join(directory, 'file');
+    // Node's FileHandle prototype is shared by handles opened by the downloader.
+    const probe = await open(join(directory, 'probe'), 'wx');
+    const prototype = Object.getPrototypeOf(probe);
+    await probe.close();
+    vi.spyOn(prototype, 'writeFile').mockRejectedValueOnce(new Error('ENOSPC'));
+    const cancel = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(new ReadableStream({
+      pull(controller) { controller.enqueue(Buffer.from('data')); },
+      cancel,
+    }))));
+    const result = await downloadFile(url, output);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain('ENOSPC');
+    expect(cancel).toHaveBeenCalled();
+    await expect(stat(output)).rejects.toThrow();
+  });
+
+  it('removes the partial file when a response stalls', async () => {
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url, options) => {
+      vi.useFakeTimers();
+      const response = new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(Buffer.from('partial'));
+          options.signal.addEventListener('abort', () => controller.error(options.signal.reason), { once: true });
+        },
+      }));
+      started();
+      return response;
+    }));
+    const output = join(directory, 'stalled');
+    const pending = downloadFile(url, output);
+    await ready;
+    // Let the first chunk finish writing before advancing the inactivity timer.
+    await vi.waitFor(async () => expect((await stat(output)).size).toBe(7));
+    await vi.advanceTimersByTimeAsync(30001);
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('TIMEOUT');
+    await expect(stat(output)).rejects.toThrow();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('saves an empty file with the empty-content hash', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null)));
+    const output = join(directory, 'empty');
+    const result = await downloadFile(url, output);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.size).toBe(0);
+      expect(result.value.sha256).toBe(createHash('sha256').digest('hex'));
+    }
+    expect((await stat(output)).size).toBe(0);
   });
 });

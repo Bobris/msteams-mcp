@@ -12,11 +12,10 @@ import {
 import { type Result, ok, err } from '../types/result.js';
 
 /** Options for HTTP requests. */
-export interface HttpOptions extends Omit<RequestInit, 'signal'> {
-  /** Read raw bytes instead of interpreting Content-Type. */
-  responseType?: 'auto' | 'buffer';
-  /** Maximum response size in bytes (checked while streaming). */
-  maxResponseBytes?: number;
+export interface HttpOptions<T = unknown> extends Omit<RequestInit, 'signal'> {
+  /** Consume a successful response without buffering it. Reset the timeout on progress
+   * to use an inactivity timeout. Disable retries when the consumer has side effects. */
+  consumeResponse?: (response: Response, resetTimeout: () => void) => Promise<T>;
   /** Timeout in milliseconds (default: 30000). */
   timeoutMs?: number;
   /** Maximum retry attempts (default: 3). */
@@ -42,11 +41,10 @@ let rateLimitedUntil: number | null = null;
  */
 export async function httpRequest<T = unknown>(
   url: string,
-  options: HttpOptions = {}
+  options: HttpOptions<T> = {}
 ): Promise<Result<HttpResponse<T>>> {
   const {
-    responseType = 'auto',
-    maxResponseBytes,
+    consumeResponse,
     timeoutMs = 30000,
     maxRetries = 3,
     retryBaseDelayMs = 1000,
@@ -68,7 +66,7 @@ export async function httpRequest<T = unknown>(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const result = await fetchWithTimeout<T>(url, fetchOptions, timeoutMs, responseType, maxResponseBytes);
+      const result = await fetchWithTimeout<T>(url, fetchOptions, timeoutMs, consumeResponse);
       
       if (result.ok) {
         return result;
@@ -124,11 +122,14 @@ async function fetchWithTimeout<T>(
   url: string,
   options: RequestInit,
   timeoutMs: number,
-  responseType: 'auto' | 'buffer',
-  maxResponseBytes?: number,
+  consumeResponse?: HttpOptions<T>['consumeResponse'],
 ): Promise<Result<HttpResponse<T>>> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const resetTimeout = () => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  };
 
   try {
     const response = await fetch(url, {
@@ -152,27 +153,10 @@ async function fetchWithTimeout<T>(
     const contentType = response.headers.get('content-type') || '';
     let data: T;
     
-    if (responseType === 'buffer') {
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      const reader = response.body?.getReader();
-      if (reader) {
-        try {
-          while (true) {
-            const next = await reader.read();
-            if (next.done) break;
-            size += next.value.byteLength;
-            if (maxResponseBytes !== undefined && size > maxResponseBytes) {
-              await reader.cancel();
-              return err(createError(ErrorCode.INVALID_INPUT, `File exceeds the ${maxResponseBytes} byte download limit`));
-            }
-            chunks.push(next.value);
-          }
-        } finally {
-          reader.releaseLock();
-        }
-      }
-      data = Buffer.concat(chunks) as T;
+    if (consumeResponse) {
+      resetTimeout();
+      data = await consumeResponse(response, resetTimeout);
+      controller.signal.throwIfAborted();
     } else if (contentType.includes('application/json')) {
       const text = await response.text();
       data = text ? JSON.parse(text) as T : {} as T;

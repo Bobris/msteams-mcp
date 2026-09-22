@@ -89,7 +89,7 @@ export const DownloadFileInputSchema = z.object({
 export const downloadFileTool: RegisteredTool<typeof DownloadFileInputSchema> = {
   definition: {
     name: 'teams_download_file',
-    description: 'Download a file using its webUrl from teams_get_shared_files and the current Teams session. Supports direct SharePoint/OneDrive for Business file URLs, including chat uploads and channel files; arbitrary Link items and short sharing links are not supported. Saves raw bytes to an absolute path on the MCP server machine and returns file name, size, content type and SHA-256. Parent directory must exist; existing files are never overwritten. Maximum size: 50 MiB.',
+    description: 'Download a file using its webUrl from teams_get_shared_files and the current Teams session. Supports direct SharePoint/OneDrive for Business file URLs, including chat uploads and channel files; arbitrary Link items and short sharing links are not supported. Saves raw bytes to an absolute path on the MCP server machine and returns file name, size, content type and SHA-256. Parent directory must exist; existing files are never overwritten. Streams directly to disk with no fixed file-size limit. Stalled transfers time out after 30 seconds without progress; failed transfers remove the partial file. For long downloads, increase your MCP client tool timeout.',
     inputSchema: {
       type: 'object',
       properties: {
