@@ -14,12 +14,13 @@
  * Reverse-engineered from Teams web client network interception (2026-07-28).
  */
 
-import { readFile } from 'node:fs/promises';
+import { open, type FileHandle } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { httpRequest } from '../utils/http.js';
 import { ErrorCode, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
 import { getValidGraphToken } from '../auth/token-extractor.js';
+import { UPLOAD_CHUNK_BYTES, UPLOAD_READ_BYTES } from '../constants.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -82,8 +83,98 @@ const GRAPH_BASE_URL = 'https://graph.microsoft.com/v1.0';
 /** The OneDrive folder Teams uses for chat file attachments. */
 const TEAMS_CHAT_FILES_FOLDER = 'Microsoft Teams Chat Files';
 
-/** Maximum file size for simple upload (4 MB — Graph API limit for single PUT). */
-const MAX_SIMPLE_UPLOAD_SIZE = 4 * 1024 * 1024;
+/** Session responses between chunks (the final response is a DriveItem). */
+interface UploadSession {
+  uploadUrl?: string;
+  nextExpectedRanges?: string[];
+}
+
+/** Stream a bounded range using small reads, keeping the file handle open across chunks. */
+function fileRange(file: FileHandle, start: number, end: number): ReadableStream<Uint8Array> {
+  let position = start;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (position > end) {
+        controller.close();
+        return;
+      }
+      const buffer = new Uint8Array(Math.min(UPLOAD_READ_BYTES, end - position + 1));
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, position);
+      if (!bytesRead) throw new Error('Local file was truncated during upload');
+      position += bytesRead;
+      controller.enqueue(buffer.subarray(0, bytesRead));
+    },
+  }, new ByteLengthQueuingStrategy({ highWaterMark: UPLOAD_READ_BYTES }));
+}
+
+/** Upload sequential Graph fragments without buffering the file or a whole fragment. */
+async function uploadContent(file: FileHandle, fileName: string, size: number, graphToken: string): Promise<Result<DriveItem>> {
+  const itemUrl = `${GRAPH_BASE_URL}/me/drive/root:/${encodeURIComponent(TEAMS_CHAT_FILES_FOLDER)}/${encodeURIComponent(fileName)}`;
+  const authorization = { Authorization: `Bearer ${graphToken}` };
+  // Graph upload sessions need a non-empty byte range; empty files use simple upload.
+  if (size === 0) {
+    const response = await httpRequest<DriveItem>(`${itemUrl}:/content`, {
+      method: 'PUT', headers: { ...authorization, 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array(0), maxRetries: 1, redirect: 'error',
+    });
+    return response.ok ? ok(response.value.data) : response;
+  }
+  const session = await httpRequest<UploadSession>(`${itemUrl}:/createUploadSession`, {
+    method: 'POST',
+    headers: { ...authorization, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'rename' } }),
+    maxRetries: 1, redirect: 'error',
+  });
+  if (!session.ok) return session;
+  let uploadUrl: string;
+  try {
+    const parsed = new URL(session.value.data.uploadUrl ?? '');
+    if (parsed.protocol !== 'https:') throw new Error('Expected HTTPS');
+    uploadUrl = parsed.href;
+  } catch {
+    return err(createError(ErrorCode.API_ERROR, 'Graph returned no valid HTTPS upload session URL'));
+  }
+  let complete = false;
+  try {
+    for (let start = 0; start < size; start += UPLOAD_CHUNK_BYTES) {
+      const end = Math.min(start + UPLOAD_CHUNK_BYTES, size) - 1;
+      const body = fileRange(file, start, end);
+      const response = await httpRequest<DriveItem & UploadSession>(uploadUrl, {
+        method: 'PUT',
+        // The upload URL is preauthenticated. Never send the Graph token here.
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(end - start + 1),
+          'Content-Range': `bytes ${start}-${end}/${size}`,
+        },
+        body, duplex: 'half', redirect: 'error', maxRetries: 1,
+      });
+      // Cancel unconsumed bytes if the server rejected the request early.
+      await body.cancel().catch(() => {});
+      if (!response.ok) return response;
+      const { status, data } = response.value;
+      if (status === 200 || status === 201) {
+        if (end !== size - 1 || !data.id || !data.name || data.size !== size) {
+          return err(createError(ErrorCode.API_ERROR, 'Upload completed with unexpected file metadata or size'));
+        }
+        complete = true;
+        return ok(data);
+      }
+      // SharePoint may return either "start-" or "start-end" for the remaining range.
+      const nextRange = data.nextExpectedRanges?.[0]?.match(/^(\d+)-(\d*)$/);
+      if (status !== 202 || end === size - 1 || !nextRange ||
+          Number(nextRange[1]) !== end + 1 || (nextRange[2] && Number(nextRange[2]) !== size - 1)) {
+        return err(createError(ErrorCode.API_ERROR, 'Upload session returned an unexpected next byte range'));
+      }
+    }
+    return err(createError(ErrorCode.API_ERROR, 'Upload session did not return a completed file'));
+  } finally {
+    if (!complete) {
+      // Best effort cancellation removes temporary fragments, not completed drive items.
+      await httpRequest(uploadUrl, { method: 'DELETE', maxRetries: 1, redirect: 'error' });
+    }
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper Functions
@@ -204,8 +295,8 @@ export function buildFilesProperty(driveItem: DriveItem): string {
 /**
  * Uploads a local file to the user's OneDrive "Microsoft Teams Chat Files" folder.
  *
- * Uses the Graph API simple upload (PUT with content). For files larger than 4 MB,
- * a session-based upload would be needed (not yet implemented).
+ * Uses a Graph upload session with sequential streamed fragments. Supports files
+ * of 2 GiB and larger without loading the file into memory.
  *
  * @param filePath - Absolute or relative path to the local file
  * @returns Upload result with item metadata and the `files` property string
@@ -221,48 +312,25 @@ export async function uploadFile(filePath: string): Promise<Result<UploadFileRes
     ));
   }
 
-  // Read the file
-  let fileBuffer: Buffer;
+  let file: FileHandle | undefined;
+  let driveItem: DriveItem;
   try {
-    fileBuffer = await readFile(filePath);
+    file = await open(filePath, 'r');
+    const info = await file.stat();
+    if (!info.isFile() || !Number.isSafeInteger(info.size)) {
+      return err(createError(ErrorCode.INVALID_INPUT, 'Expected a regular file with a safely representable size'));
+    }
+    const response = await uploadContent(file, basename(filePath), info.size, graphToken);
+    if (!response.ok) return response;
+    driveItem = response.value;
   } catch (error) {
-    return err(createError(
-      ErrorCode.INVALID_INPUT,
-      `Failed to read file "${filePath}": ${error instanceof Error ? error.message : String(error)}`,
-      { retryable: false }
-    ));
+    return err(createError(ErrorCode.INVALID_INPUT,
+      `Failed to upload file "${filePath}": ${error instanceof Error ? error.message : String(error)}`,
+      { retryable: false }));
+  } finally {
+    await file?.close();
   }
 
-  // Check file size (Graph API simple upload limit is 4 MB)
-  if (fileBuffer.length > MAX_SIMPLE_UPLOAD_SIZE) {
-    return err(createError(
-      ErrorCode.INVALID_INPUT,
-      `File "${filePath}" is ${Math.round(fileBuffer.length / 1024 / 1024)} MB. Maximum size for upload is ${MAX_SIMPLE_UPLOAD_SIZE / 1024 / 1024} MB. Large file upload is not yet supported.`,
-      { retryable: false }
-    ));
-  }
-
-  const fileName = basename(filePath);
-
-  // Build the Graph API upload URL
-  // PUT /me/drive/root:/Microsoft Teams Chat Files/{filename}:/content
-  const uploadUrl = `${GRAPH_BASE_URL}/me/drive/root:/${encodeURIComponent(TEAMS_CHAT_FILES_FOLDER)}/${encodeURIComponent(fileName)}:/content`;
-
-  const response = await httpRequest<DriveItem>(uploadUrl, {
-    method: 'PUT',
-    headers: {
-      'Authorization': `Bearer ${graphToken}`,
-      'Content-Type': 'application/octet-stream',
-    },
-    body: new Uint8Array(fileBuffer),
-    maxRetries: 1, // Don't retry uploads — could result in duplicate files
-  });
-
-  if (!response.ok) {
-    return response;
-  }
-
-  const driveItem = response.value.data;
   const baseUrl = extractBaseUrl(driveItem);
   if (!baseUrl) {
     return err(createError(

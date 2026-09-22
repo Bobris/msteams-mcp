@@ -178,12 +178,12 @@ const sendMessageToolDefinition: Tool = {
           properties: {
             filePath: {
               type: 'string',
-              description: 'Absolute or relative path to the local file to upload and attach (e.g., "/path/to/document.pdf"). Max 4 MB per file.',
+              description: 'Absolute or relative path to the local file to upload and attach (e.g., "/path/to/document.pdf"). Supports 2 GiB and larger via streaming; service quotas and MCP client timeouts still apply.',
             },
           },
           required: ['filePath'],
         },
-        description: 'Files to upload and attach to the message. Each file is uploaded to the user\'s OneDrive "Microsoft Teams Chat Files" folder and referenced in the message. Cannot be combined with scheduleAt. Max 4 MB per file. To upload a file without sending a message, use teams_upload_file.',
+        description: 'Files to upload and attach to the message. Each file is uploaded to the user\'s OneDrive "Microsoft Teams Chat Files" folder and referenced in the message. Cannot be combined with scheduleAt. Supports 2 GiB and larger via streaming; service quotas and MCP client timeouts still apply. To upload a file without sending a message, use teams_upload_file.',
       },
     },
     required: ['content'],

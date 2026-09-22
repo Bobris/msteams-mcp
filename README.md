@@ -392,3 +392,29 @@ your MCP client's tool-call timeout; available disk space and service limits
 still apply. Direct SharePoint/OneDrive for Business file
 URLs are supported; arbitrary web links and opaque sharing/preview links are not.
 The API uses SharePoint's [file REST endpoint](https://learn.microsoft.com/en-us/sharepoint/dev/sp-add-ins/working-with-folders-and-files-with-rest).
+
+## Upload files and attach them to messages
+
+`teams_upload_file` uploads a local file to your OneDrive's **Microsoft Teams
+Chat Files** folder. To upload and send files in one step, pass
+`attachments: [{ "filePath": "/absolute/path/file.bin" }]` to
+`teams_send_message`. Attachments cannot be combined with scheduled messages.
+The returned `filesProperty` is low-level chatsvc metadata, not an
+`attachments` argument.
+
+```sh
+npm run cli -- upload_file --filePath '/absolute/path/large-file.bin'
+```
+
+Uploads use [Microsoft Graph upload sessions](https://learn.microsoft.com/en-us/graph/api/driveitem-createuploadsession?view=graph-rest-1.0):
+sequential 5 MiB fragments, each streamed from disk with 64 KiB reads and
+backpressure. Files of 2 GiB and larger are supported without a fixed local size
+limit or whole-file buffering. Empty files use a zero-byte simple upload.
+Existing names are renamed for non-empty uploads. Service size limits, account
+quota, and available bandwidth still apply.
+
+Requests time out after 30 seconds without upload/read progress, rather than
+limiting the whole file's transfer time. Increase your MCP client's tool-call
+timeout for large uploads. Failed transfers attempt to cancel the upload session;
+replaying a partially consumed request stream is disabled. Interrupted uploads
+currently restart from the beginning on a new tool call.

@@ -13,6 +13,8 @@ import { type Result, ok, err } from '../types/result.js';
 
 /** Options for HTTP requests. */
 export interface HttpOptions<T = unknown> extends Omit<RequestInit, 'signal'> {
+  /** Required by Node fetch for a streaming request body. */
+  duplex?: 'half';
   /** Consume a successful response without buffering it. Reset the timeout on progress
    * to use an inactivity timeout. Disable retries when the consumer has side effects. */
   consumeResponse?: (response: Response, resetTimeout: () => void) => Promise<T>;
@@ -120,7 +122,7 @@ export async function httpRequest<T = unknown>(
  */
 async function fetchWithTimeout<T>(
   url: string,
-  options: RequestInit,
+  options: RequestInit & { duplex?: 'half' },
   timeoutMs: number,
   consumeResponse?: HttpOptions<T>['consumeResponse'],
 ): Promise<Result<HttpResponse<T>>> {
@@ -132,8 +134,17 @@ async function fetchWithTimeout<T>(
   };
 
   try {
+    const body = options.body instanceof ReadableStream
+      ? options.body.pipeThrough(new TransformStream({
+        transform(chunk, controller) {
+          resetTimeout();
+          controller.enqueue(chunk);
+        },
+      }))
+      : options.body;
     const response = await fetch(url, {
       ...options,
+      body,
       signal: controller.signal,
     });
 
@@ -200,6 +211,7 @@ async function fetchWithTimeout<T>(
     ));
   } finally {
     clearTimeout(timeoutId);
+    if (options.body instanceof ReadableStream) controller.abort();
   }
 }
 

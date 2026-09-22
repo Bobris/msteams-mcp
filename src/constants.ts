@@ -259,3 +259,8 @@ export const STANDARD_EMOJIS: readonly StandardEmoji[] = [
   { key: 'makeup', description: 'Make-up 💄', category: 'other' },
   { key: 'snowangel', description: 'Snow angel', category: 'other' },
 ];
+
+/** Graph fragments must be multiples of 320 KiB and smaller than 60 MiB. */
+export const UPLOAD_CHUNK_BYTES = 5 * 1024 * 1024;
+/** Bound the upload's local file read-ahead independently of fragment/file size. */
+export const UPLOAD_READ_BYTES = 64 * 1024;

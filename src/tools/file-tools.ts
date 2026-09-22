@@ -57,7 +57,7 @@ const getSharedFilesToolDefinition: Tool = {
 
 const uploadFileToolDefinition: Tool = {
   name: 'teams_upload_file',
-  description: 'Upload a local file to the user\'s OneDrive "Microsoft Teams Chat Files" folder via the Microsoft Graph API. Returns the uploaded file\'s metadata including itemId, fileName, SharePoint URLs, and a filesProperty string. The filesProperty can be passed to teams_send_message as the attachments parameter to send the file as an attachment in a chat message. Maximum file size is 4 MB. The file path refers to the local filesystem of the machine running the MCP server.',
+  description: 'Upload a local file to the user\'s OneDrive "Microsoft Teams Chat Files" folder via the Microsoft Graph API. Returns the uploaded file\'s metadata including itemId, fileName, SharePoint URLs, and a filesProperty string. To upload and send an attachment in one step, use teams_send_message with attachments: [{ filePath }]. The returned filesProperty is the low-level chatsvc metadata, not an attachments argument. Streams files in upload-session fragments, supporting 2 GiB and larger without a fixed local size limit. Increase the MCP client tool timeout for large uploads. The file path refers to the local filesystem of the machine running the MCP server.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -112,7 +112,7 @@ async function handleUploadFile(
       objectUrl: result.value.objectUrl,
       listItemUniqueId: result.value.listItemUniqueId,
       filesProperty: result.value.filesProperty,
-      note: 'File uploaded to OneDrive. Pass the filesProperty to teams_send_message attachments to share it in a chat, or use teams_send_message with attachments parameter directly.',
+      note: 'File uploaded to OneDrive. To upload and send files in one step, use teams_send_message with attachments: [{ filePath }].',
     },
   };
 }

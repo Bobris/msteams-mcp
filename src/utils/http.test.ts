@@ -322,6 +322,39 @@ describe('streaming response timeouts', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('keeps a progressing streamed upload alive beyond the initial timeout', async () => {
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (sent === 5) { controller.close(); return; }
+        await new Promise(resolve => setTimeout(resolve, 20));
+        controller.enqueue(new Uint8Array([sent++]));
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url, options) => {
+      const reader = options.body.getReader();
+      const received: number[] = [];
+      try {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          expect(options.signal.aborted).toBe(false);
+          received.push(...next.value);
+        }
+      } finally { reader.releaseLock(); }
+      expect(received).toEqual([0, 1, 2, 3, 4]);
+      return new Response('uploaded');
+    }));
+    const pending = httpRequest('https://example.com/upload', {
+      method: 'PUT', body, duplex: 'half', timeoutMs: 30, maxRetries: 1,
+    });
+    await vi.runAllTimersAsync();
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.data).toBe('uploaded');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('aborts a stalled response body and clears its timer', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation((_url, options) => new Response(new ReadableStream({
       start(controller) {
