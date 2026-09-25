@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { uploadFile, uploadFiles } from './sharepoint-api.js';
+import { uploadFile, uploadFiles, buildFilesProperty } from './sharepoint-api.js';
 import { getValidGraphToken } from '../auth/token-extractor.js';
 import { clearRateLimitState } from '../utils/http.js';
 import { UPLOAD_CHUNK_BYTES, UPLOAD_READ_BYTES } from '../constants.js';
@@ -15,6 +15,7 @@ const json = (data: unknown, status = 200) => new Response(JSON.stringify(data),
 });
 const item = (size: number) => ({
   id: 'item-id', name: 'file.bin', size,
+  sharepointIds: { listItemUniqueId: 'a49bccb4-6ce5-4af0-85c8-3cb57fbf100a' },
   webUrl: 'https://example-my.sharepoint.com/personal/user/Documents/Microsoft%20Teams%20Chat%20Files/file.bin',
 });
 beforeEach(async () => {
@@ -31,6 +32,11 @@ function mockUpload(size: number, inspect?: (bytes: Uint8Array, offset: number) 
   let largestRead = 0;
   const fetchMock = vi.fn().mockImplementation(async (url: string, options: RequestInit) => {
     const headers = new Headers(options.headers);
+    if (options.method === 'GET' || !options.method) {
+      expect(url).toContain('/me/drive/items/item-id?$select=');
+      expect(headers.get('Authorization')).toBe('Bearer graph-test-token');
+      return json(item(size));
+    }
     if (options.method === 'POST') {
       expect(url).toContain(':/createUploadSession');
       expect(headers.get('Authorization')).toBe('Bearer graph-test-token');
@@ -102,7 +108,7 @@ describe('streaming Graph uploads', () => {
   it('uploads empty files without an invalid session byte range', async () => {
     const path = join(directory, 'empty.bin');
     await writeFile(path, '');
-    const fetchMock = vi.fn().mockResolvedValue(json(item(0), 201));
+    const fetchMock = vi.fn().mockImplementation(async () => json(item(0), 201));
     vi.stubGlobal('fetch', fetchMock);
     expect((await uploadFile(path)).ok).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining(':/content'), expect.objectContaining({ method: 'PUT', body: new Uint8Array(0) }));
@@ -141,9 +147,37 @@ describe('streaming Graph uploads', () => {
   it('stops multiple uploads at the first failure', async () => {
     const path = join(directory, 'first');
     await writeFile(path, '');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(item(0), 201)));
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => json(item(0), 201)));
     const result = await uploadFiles([path, join(directory, 'missing'), path]);
     expect(result.ok).toBe(false);
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+describe('Teams attachment identity', () => {
+  it('uses the file SharePoint GUID for every Teams identity, never the Graph ID', () => {
+    const entry = JSON.parse(buildFilesProperty(item(42)))[0];
+    expect(entry.itemid).toBe(item(42).sharepointIds.listItemUniqueId);
+    expect(entry.id).toBe(entry.itemid);
+    expect(entry.sharepointIds.listItemUniqueId).toBe(entry.itemid);
+    expect(entry.permissionScope).not.toBe('anonymous');
+  });
+  it('rejects a missing file GUID even when the parent has a valid GUID', () => {
+    expect(() => buildFilesProperty({ ...item(42), sharepointIds: undefined,
+      parentReference: { sharepointIds: item(42).sharepointIds } })).toThrow('SharePoint file GUID');
+  });
+  it('hydrates upload metadata before producing a Teams attachment', async () => {
+    const path = join(directory, 'empty'); await writeFile(path, '');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(json({ ...item(0), sharepointIds: undefined }, 201))
+      .mockResolvedValueOnce(json(item(0))));
+    const result = await uploadFile(path);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(JSON.parse(result.value.filesProperty)[0].itemid).toBe(item(0).sharepointIds.listItemUniqueId);
+  });
+  it('returns failure when Graph cannot provide file identity', async () => {
+    const path = join(directory, 'empty'); await writeFile(path, '');
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => json({ ...item(0), sharepointIds: undefined })));
+    expect((await uploadFile(path)).ok).toBe(false);
   });
 });

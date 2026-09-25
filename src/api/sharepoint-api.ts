@@ -1,8 +1,8 @@
 /**
  * SharePoint/OneDrive file upload API via Microsoft Graph.
  *
- * Teams file attachments work in two steps: (1) upload the file to the user's
- * OneDrive "Microsoft Teams Chat Files" folder via the Graph API, then (2) send
+ * Teams file attachments require uploading to OneDrive, resolving the file's
+ * SharePoint GUID, and granting chat recipients read access before sending
  * a chat message with a `files` property referencing the uploaded file.
  *
  * We use the Graph API (`graph.microsoft.com`) rather than the SharePoint REST
@@ -21,6 +21,8 @@ import { ErrorCode, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
 import { getValidGraphToken } from '../auth/token-extractor.js';
 import { UPLOAD_CHUNK_BYTES, UPLOAD_READ_BYTES } from '../constants.js';
+import { grantAttachmentAccess } from './attachment-sharing.js';
+import { GRAPH_FILES_API } from '../utils/api-config.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -231,10 +233,13 @@ export function buildFilesProperty(driveItem: DriveItem): string {
   const baseUrl = extractBaseUrl(driveItem) ?? '';
   const fileName = driveItem.name;
   const fileType = getFileExtension(fileName);
-  const itemId = driveItem.id;
-  const listItemUniqueId = driveItem.sharepointIds?.listItemUniqueId
-    ?? driveItem.parentReference?.sharepointIds?.listItemUniqueId
-    ?? itemId;
+  // Teams uses the file's SharePoint GUID, not its opaque Graph driveItem ID
+  // (and never the parent folder's GUID).
+  const listItemUniqueId = driveItem.sharepointIds?.listItemUniqueId;
+  if (!listItemUniqueId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(listItemUniqueId)) {
+    throw new Error('Missing SharePoint file GUID for Teams attachment');
+  }
+  const itemId = listItemUniqueId;
 
   const objectUrl = driveItem.webUrl
     ?? `${baseUrl}Documents/${TEAMS_CHAT_FILES_FOLDER}/${encodeURIComponent(fileName)}`;
@@ -268,7 +273,6 @@ export function buildFilesProperty(driveItem: DriveItem): string {
     botFileProperties: {},
     isUploadError: null,
     progressComplete: null,
-    permissionScope: 'anonymous',
     filePreview: {
       previewUrl: '',
       previewHeight: 0,
@@ -331,6 +335,9 @@ export async function uploadFile(filePath: string): Promise<Result<UploadFileRes
     await file?.close();
   }
 
+  const metadata = await getAttachmentDriveItem(driveItem.id);
+  if (!metadata.ok) return metadata;
+  driveItem = metadata.value;
   const baseUrl = extractBaseUrl(driveItem);
   if (!baseUrl) {
     return err(createError(
@@ -350,9 +357,7 @@ export async function uploadFile(filePath: string): Promise<Result<UploadFileRes
     baseUrl,
     objectUrl: driveItem.webUrl ?? `${baseUrl}Documents/${TEAMS_CHAT_FILES_FOLDER}/${encodeURIComponent(driveItem.name)}`,
     webUrl: driveItem.webUrl,
-    listItemUniqueId: driveItem.sharepointIds?.listItemUniqueId
-      ?? driveItem.parentReference?.sharepointIds?.listItemUniqueId
-      ?? driveItem.id,
+    listItemUniqueId: driveItem.sharepointIds?.listItemUniqueId,
     filesProperty,
   });
 }
@@ -367,7 +372,8 @@ export async function uploadFile(filePath: string): Promise<Result<UploadFileRes
  * @returns Combined `files` property string and per-file upload results
  */
 export async function uploadFiles(
-  filePaths: string[]
+  filePaths: string[],
+  recipientObjectIds: string[] = []
 ): Promise<Result<{ filesProperty: string; uploads: UploadFileResult[] }>> {
   const uploads: UploadFileResult[] = [];
   const fileEntries: unknown[] = [];
@@ -378,6 +384,9 @@ export async function uploadFiles(
       return result;
     }
     uploads.push(result.value);
+
+    const shared = await grantAttachmentAccess(result.value.itemId, recipientObjectIds);
+    if (!shared.ok) return shared;
 
     // Parse the filesProperty (which is JSON.stringify([singleFile])) and merge
     try {
@@ -396,4 +405,20 @@ export async function uploadFiles(
     filesProperty: JSON.stringify(fileEntries),
     uploads,
   });
+}
+/** Upload completion omits SharePoint IDs; explicitly request the file metadata. */
+export async function getAttachmentDriveItem(itemId: string): Promise<Result<DriveItem>> {
+  const token = getValidGraphToken();
+  if (!token) return err(createError(ErrorCode.AUTH_REQUIRED, 'Login required to read attachment metadata.'));
+  const response = await httpRequest<DriveItem>(GRAPH_FILES_API.item(itemId), {
+    headers: { Authorization: `Bearer ${token}` }, redirect: 'error',
+  });
+  if (!response.ok) return response;
+  const item = response.value.data;
+  if (item.id !== itemId || !item.name || !item.webUrl || !item.sharepointIds?.listItemUniqueId) {
+    return err(createError(ErrorCode.API_ERROR, 'Incomplete SharePoint file metadata; attachment was not sent.'));
+  }
+  try { buildFilesProperty(item); }
+  catch { return err(createError(ErrorCode.API_ERROR, 'Invalid SharePoint file GUID; attachment was not sent.')); }
+  return ok(item);
 }

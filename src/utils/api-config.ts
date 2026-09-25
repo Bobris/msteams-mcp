@@ -269,3 +269,10 @@ export function sharePointDownloadUrl(webUrl: string): { origin: string; url: st
     fileName: pathname.slice(pathname.lastIndexOf('/') + 1),
   };
 }
+/** Graph endpoints for explicit attachment sharing. */
+export const GRAPH_FILES_API = {
+  base: 'https://graph.microsoft.com/v1.0',
+  chatMembers: (chatId: string) => `https://graph.microsoft.com/v1.0/chats/${encodeURIComponent(chatId)}/members`,
+  invite: (itemId: string) => `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(itemId)}/invite`,
+  item: (itemId: string) => `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(itemId)}?$select=id,name,size,webUrl,sharepointIds,parentReference`,
+};

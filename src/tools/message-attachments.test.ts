@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { sendMessageTool, SendMessageInputSchema } from './message-tools.js';
 import { sendMessage } from '../api/chatsvc-api.js';
 import { uploadFiles } from '../api/sharepoint-api.js';
+import { getAttachmentRecipients } from '../api/attachment-sharing.js';
 import { ok, err } from '../types/result.js';
 import { createError, ErrorCode } from '../types/errors.js';
 import type { ToolContext } from './index.js';
@@ -12,8 +13,9 @@ vi.mock('../api/chatsvc-api.js', async importOriginal => ({
 vi.mock('../api/sharepoint-api.js', async importOriginal => ({
   ...await importOriginal<typeof import('../api/sharepoint-api.js')>(), uploadFiles: vi.fn(),
 }));
+vi.mock('../api/attachment-sharing.js', () => ({ getAttachmentRecipients: vi.fn() }));
 const ctx = {} as ToolContext;
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(getAttachmentRecipients).mockResolvedValue(ok(['recipient'])); });
 
 describe('message attachments', () => {
   it('passes uploaded file metadata to the outgoing message', async () => {
@@ -24,7 +26,7 @@ describe('message attachments', () => {
       content: 'test', conversationId: 'chat', attachments: [{ filePath: '/tmp/file.bin' }],
     }), ctx);
     expect(result.success).toBe(true);
-    expect(uploadFiles).toHaveBeenCalledWith(['/tmp/file.bin']);
+    expect(uploadFiles).toHaveBeenCalledWith(['/tmp/file.bin'], ['recipient']);
     expect(sendMessage).toHaveBeenCalledWith('chat', 'test', expect.objectContaining({ files: filesProperty }));
   });
   it('does not send a message after an upload failure', async () => {
@@ -43,4 +45,14 @@ describe('message attachments', () => {
     expect(uploadFiles).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
   });
+});
+
+it('does not upload or send when recipients cannot be resolved', async () => {
+  vi.mocked(getAttachmentRecipients).mockResolvedValue(err(createError(ErrorCode.API_ERROR, 'No members')));
+  const result = await sendMessageTool.handler(SendMessageInputSchema.parse({
+    content: 'test', conversationId: 'chat', attachments: [{ filePath: '/tmp/file.bin' }],
+  }), ctx);
+  expect(result.success).toBe(false);
+  expect(uploadFiles).not.toHaveBeenCalled();
+  expect(sendMessage).not.toHaveBeenCalled();
 });

@@ -27,6 +27,7 @@ import {
 } from '../api/chatsvc-api.js';
 import { getFavorites, addFavorite, removeFavorite, getCustomEmojis } from '../api/csa-api.js';
 import { uploadFiles } from '../api/sharepoint-api.js';
+import { getAttachmentRecipients } from '../api/attachment-sharing.js';
 import { parseTeamsMessageUrl } from '../utils/parsers.js';
 import { ErrorCode, createError } from '../types/errors.js';
 import { SELF_CHAT_ID, MAX_THREAD_LIMIT, DEFAULT_THREAD_LIMIT, MAX_WAIT_SECONDS, STANDARD_EMOJIS } from '../constants.js';
@@ -142,7 +143,7 @@ export const WaitForReplyInputSchema = z.object({
 
 const sendMessageToolDefinition: Tool = {
   name: 'teams_send_message',
-  description: 'Send a message to a Teams conversation. Use markdown for formatting (not HTML): **bold**, *italic*, ~~strikethrough~~, `code`, ```code blocks```, lists, and newlines. Supports @mentions: people with @[Name](mri) (MRI from teams_search_people) and channel tags with @[TagName](tag:tagId) (IDs from teams_get_tags). Markdown links [text](url) support http(s) and mailto. Defaults to self-notes (48:notes). For channel thread replies, provide replyToMessageId. For a new channel thread with a title, provide subject. To schedule for later, provide scheduleAt (ISO 8601). Set contentType to "text" to send content verbatim without markdown interpretation. To attach files, provide attachments with local file paths — files are uploaded to OneDrive and referenced in the message. Cannot combine attachments with scheduleAt.',
+  description: 'Send a message to a Teams conversation. Use markdown for formatting (not HTML): **bold**, *italic*, ~~strikethrough~~, `code`, ```code blocks```, lists, and newlines. Supports @mentions: people with @[Name](mri) (MRI from teams_search_people) and channel tags with @[TagName](tag:tagId) (IDs from teams_get_tags). Markdown links [text](url) support http(s) and mailto. Defaults to self-notes (48:notes). For channel thread replies, provide replyToMessageId. For a new channel thread with a title, provide subject. To schedule for later, provide scheduleAt (ISO 8601). Set contentType to "text" to send content verbatim without markdown interpretation. To attach files, provide attachments with local file paths — files are uploaded to OneDrive and shared with the current private-chat members before the message is sent. Attachments support private chats and self-notes; channel attachments are not supported. Cannot combine attachments with scheduleAt.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -183,7 +184,7 @@ const sendMessageToolDefinition: Tool = {
           },
           required: ['filePath'],
         },
-        description: 'Files to upload and attach to the message. Each file is uploaded to the user\'s OneDrive "Microsoft Teams Chat Files" folder and referenced in the message. Cannot be combined with scheduleAt. Supports 2 GiB and larger via streaming; service quotas and MCP client timeouts still apply. To upload a file without sending a message, use teams_upload_file.',
+        description: 'Files to upload and attach to the message. Each file is uploaded to the user\'s OneDrive "Microsoft Teams Chat Files" folder and shared with current private-chat members with signed-in read access before sending. Self-notes remain private. Channel attachments are not supported. Cannot be combined with scheduleAt. Supports 2 GiB and larger via streaming; service quotas and MCP client timeouts still apply. To upload a file without sending a message, use teams_upload_file.',
       },
     },
     required: ['content'],
@@ -588,7 +589,9 @@ async function handleSendMessage(
     }
 
     const filePaths = input.attachments.map(a => a.filePath);
-    const uploadResult = await uploadFiles(filePaths);
+    const recipients = await getAttachmentRecipients(input.conversationId);
+    if (!recipients.ok) return { success: false, error: recipients.error };
+    const uploadResult = await uploadFiles(filePaths, recipients.value);
     if (!uploadResult.ok) {
       return { success: false, error: uploadResult.error };
     }
