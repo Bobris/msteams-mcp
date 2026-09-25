@@ -414,18 +414,32 @@ export class TeamsServer implements ITeamsServer {
             if (retryResult.success) {
               return this.formatSuccess(retryResult.data);
             }
+            // A partial HTTP refresh may leave the credential used by this
+            // operation invalid. Verify using the actual operation, then force
+            // the browser fallback instead of trusting Substrate alone.
+            if (this.isAuthError(retryResult.error)) {
+              const browserRefresh = await refreshTokensViaBrowser(true);
+              if (browserRefresh.ok) {
+                const browserRetry = await invokeTool(name, args, ctx);
+                return browserRetry.success
+                  ? this.formatSuccess(browserRetry.data)
+                  : this.formatError(browserRetry.error);
+              }
+              return this.formatError(createError(ErrorCode.AUTH_REQUIRED,
+                'Automatic recovery failed. Call teams_login with recover: true to recover using existing SSO cookies.'));
+            }
             // Retry also failed after successful re-auth — log for diagnostics
             log.error('auto-login', `Retry failed after successful re-authentication: ${retryResult.error.message}`);
             return this.formatError(retryResult.error);
           }
 
-          // Auto-login failed — return a strongly-worded error directing to forceNew
+          // Preserve SSO cookies when guiding the caller through recovery.
           log.error('auto-login', 'Automatic re-authentication failed.');
           return this.formatError(createError(
             ErrorCode.AUTH_REQUIRED,
-            'ACTION REQUIRED: Teams session has expired and automatic re-authentication failed. You MUST call teams_login with forceNew: true to clear stale state and re-authenticate. Do NOT call teams_login without forceNew — it will return early without fixing the problem.',
+            'ACTION REQUIRED: Teams session has expired and automatic re-authentication failed. You MUST call teams_login with recover: true to retry authentication while preserving SSO cookies.',
             { suggestions: [
-              'IMMEDIATELY call teams_login with { "forceNew": true }',
+              'IMMEDIATELY call teams_login with { "recover": true }',
               'After login succeeds, retry the original request',
               'Do NOT skip this step or tell the user Teams is unavailable — authentication just needs refreshing',
             ] }

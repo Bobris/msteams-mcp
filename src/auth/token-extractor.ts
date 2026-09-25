@@ -67,7 +67,26 @@ function getTeamsLocalStorage(state?: SessionState): LocalStorageEntry[] | null 
   if (!sessionState) return null;
 
   const teamsOrigin = getTeamsOrigin(sessionState);
-  return teamsOrigin?.localStorage ?? null;
+  if (!teamsOrigin) return null;
+  // Keep account identity from the preferred origin, but include tokens renewed
+  // on the other Teams host during the teams.cloud.microsoft migration.
+  const accounts = new Set<string>();
+  for (const item of teamsOrigin.localStorage) {
+    try {
+      const entry = JSON.parse(item.value);
+      if (entry.homeAccountId) accounts.add(entry.homeAccountId);
+    } catch { /* Non-MSAL entry. */ }
+  }
+  const additional = sessionState.origins.filter(origin => origin !== teamsOrigin &&
+    ['https://teams.microsoft.com', 'https://teams.cloud.microsoft',
+      'https://teams.microsoft.us', 'https://dod.teams.microsoft.us'].includes(origin.origin)
+  ).flatMap(origin => origin.localStorage).filter(item => {
+    try {
+      const entry = JSON.parse(item.value);
+      return entry.credentialType === 'AccessToken' && accounts.has(entry.homeAccountId);
+    } catch { return false; }
+  });
+  return [...teamsOrigin.localStorage, ...additional];
 }
 
 /**
@@ -578,7 +597,11 @@ export function extractMessageAuth(state?: SessionState): MessageAuthInfo | null
   if (!sessionState) return null;
 
   const cookies = sessionState.cookies ?? [];
-  const teamsCookies = cookies.filter(c => c.domain?.includes('teams.microsoft.com'));
+  const teamsCookies = cookies.filter(c => {
+    const domain = c.domain?.replace(/^\./, '');
+    return ['teams.microsoft.com', 'teams.cloud.microsoft', 'teams.microsoft.us',
+      'dod.teams.microsoft.us'].some(host => domain === host || domain?.endsWith('.' + host));
+  });
 
   // Extract the two required cookies
   const skypeToken = teamsCookies.find(c => c.name === 'skypetoken_asm')?.value ?? null;

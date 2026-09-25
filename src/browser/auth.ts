@@ -227,7 +227,7 @@ export async function getAuthStatus(page: Page): Promise<AuthStatus> {
   }
 
   // If on Teams domain, check for authenticated content
-  if (currentUrl.includes('teams.microsoft.com')) {
+  if (isTeamsUrl(currentUrl)) {
     const hasContent = await hasAuthenticatedContent(page);
     return {
       isAuthenticated: hasContent,
@@ -259,7 +259,12 @@ const TEAMS_URL_PATTERNS = [
  * Checks if a URL is a Teams domain.
  */
 function isTeamsUrl(url: string): boolean {
-  return TEAMS_URL_PATTERNS.some(pattern => url.includes(pattern));
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && TEAMS_URL_PATTERNS.includes(parsed.hostname);
+  } catch {
+    return false;
+  }
 }
 
 /**

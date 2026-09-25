@@ -52,7 +52,7 @@ let refreshInProgress = false;
  * 2. If HTTP fails, fall back to headless browser refresh (~8s)
  * 3. If both fail, return error directing to teams_login
  */
-export async function refreshTokensViaBrowser(): Promise<Result<TokenRefreshResult>> {
+export async function refreshTokensViaBrowser(browserOnly = false): Promise<Result<TokenRefreshResult>> {
   // Prevent concurrent refresh attempts
   if (refreshInProgress) {
     return err(createError(
@@ -64,21 +64,13 @@ export async function refreshTokensViaBrowser(): Promise<Result<TokenRefreshResu
 
   // Get current token expiry for comparison
   const beforeToken = extractSubstrateToken();
-  if (!beforeToken) {
-    log.warn('token-refresh', 'No Substrate token found in session - cannot refresh, browser login required');
-    return err(createError(
-      ErrorCode.AUTH_REQUIRED,
-      'ACTION REQUIRED: No token found in session. You MUST call teams_login to authenticate.',
-    ));
-  }
-
-  log.debug('token-refresh', `Current token expires at ${beforeToken.expiry.toISOString()} (${Math.round((beforeToken.expiry.getTime() - Date.now()) / 60000)} mins remaining)`);
-
-  const previousExpiry = beforeToken.expiry;
+  // A fresh session may have a refresh token but no Substrate token yet.
+  const previousExpiry = beforeToken?.expiry ?? new Date(0);
   refreshInProgress = true;
 
   try {
     // ── Strategy 1: HTTP refresh (fast, no browser needed) ──────────────
+    if (browserOnly) return await refreshTokensViaBrowserImpl(previousExpiry);
     const httpResult = await refreshTokensViaHttp();
 
     if (httpResult.ok) {

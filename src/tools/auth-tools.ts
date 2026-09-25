@@ -30,6 +30,7 @@ import { ensureAuthenticated, forceNewLogin, getAuthStatus } from '../browser/au
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const LoginInputSchema = z.object({
+  recover: z.boolean().optional().default(false),
   forceNew: z.boolean().optional().default(false),
 });
 
@@ -39,10 +40,14 @@ export const LoginInputSchema = z.object({
 
 const loginToolDefinition: Tool = {
   name: 'teams_login',
-  description: 'Trigger manual login flow for Microsoft Teams. Use this if the session has expired or you need to switch accounts.',
+  description: 'Authenticate with Microsoft Teams, trying silent SSO first. Use recover: true after an authentication failure to bypass cached-token checks while preserving SSO cookies. Use forceNew: true only for an explicit session reset or account switch.',
   inputSchema: {
     type: 'object',
     properties: {
+      recover: {
+        type: 'boolean',
+        description: 'Retry authentication even if cached tokens look valid, preserving SSO cookies (default: false)',
+      },
       forceNew: {
         type: 'boolean',
         description: 'Force a new login even if a session exists (default: false)',
@@ -85,7 +90,7 @@ async function handleLogin(
 
   // Fast path: if tokens are still valid, skip browser entirely
   // This is more reliable than browser-based auth detection
-  if (!input.forceNew) {
+  if (!input.forceNew && !input.recover) {
     const tokenStatus = getSubstrateTokenStatus();
     if (tokenStatus.hasToken && 
         tokenStatus.minutesRemaining !== undefined && 

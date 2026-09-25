@@ -169,8 +169,22 @@ interface MsalCacheExtractionResult {
  * Extracts MSAL cache info (refresh token, client ID, tenant ID) from session state.
  * Returns detailed diagnostics to help debug extraction failures.
  */
+function getRefreshTokenOrigin(state: SessionState): SessionState['origins'][number] | null {
+  const preferred = getTeamsOrigin(state);
+  const candidates = [preferred, ...state.origins.filter(origin =>
+    ['https://teams.microsoft.com', 'https://teams.cloud.microsoft',
+      'https://teams.microsoft.us', 'https://dod.teams.microsoft.us'].includes(origin.origin)
+  )];
+  return candidates.find(origin => origin?.localStorage.some(item => {
+    try {
+      const entry = JSON.parse(item.value);
+      return entry.credentialType === 'RefreshToken' && entry.secret && entry.clientId;
+    } catch { return false; }
+  })) ?? preferred;
+}
+
 function extractMsalCacheInfoWithDiagnostics(state: SessionState): MsalCacheExtractionResult {
-  const teamsOrigin = getTeamsOrigin(state);
+  const teamsOrigin = getRefreshTokenOrigin(state);
   
   const diagnostics = {
     hasTeamsOrigin: teamsOrigin !== null,
@@ -275,9 +289,11 @@ async function refreshAccessToken(
       const errorText = await response.text().catch(() => '');
       let errorDetail = `HTTP ${response.status}`;
 
+      let oauthError = '';
       // Parse Azure AD error response for better diagnostics
       try {
         const errorJson = JSON.parse(errorText);
+        oauthError = errorJson.error;
         if (errorJson.error_description) {
           errorDetail = errorJson.error_description;
         } else if (errorJson.error) {
@@ -288,7 +304,7 @@ async function refreshAccessToken(
       }
 
       // Specific error codes that indicate the refresh token is invalid/expired
-      const isAuthError = response.status === 400 || response.status === 401;
+      const isAuthError = ['invalid_grant', 'interaction_required', 'login_required'].includes(oauthError);
 
       return err(createError(
         isAuthError ? ErrorCode.AUTH_EXPIRED : ErrorCode.UNKNOWN,
@@ -635,7 +651,7 @@ export async function refreshTokensViaHttp(): Promise<Result<HttpRefreshResult>>
     `tenantId=${cacheInfo.tenantId.substring(0, 8)}...`
   );
 
-  const teamsOrigin = getTeamsOrigin(state);
+  const teamsOrigin = getRefreshTokenOrigin(state);
   if (!teamsOrigin?.localStorage) {
     log.warn('token-refresh-http', 'Teams origin disappeared after extraction');
     return err(createError(
@@ -654,6 +670,7 @@ export async function refreshTokensViaHttp(): Promise<Result<HttpRefreshResult>>
   let skypeSpacesToken: string | null = null;
   let skypeSpacesExpiresIn: number | null = null;
   const scopeErrors: string[] = [];
+  let authFailure: ReturnType<typeof createError> | undefined;
 
   // Use the current refresh token; it may be rotated by Azure AD
   let currentRefreshToken = cacheInfo.refreshToken;
@@ -668,15 +685,10 @@ export async function refreshTokensViaHttp(): Promise<Result<HttpRefreshResult>>
     );
 
     if (!result.ok) {
-      // If any refresh fails with auth error, the refresh token is likely expired
       if (result.error.code === ErrorCode.AUTH_EXPIRED) {
-        return err(createError(
-          ErrorCode.AUTH_EXPIRED,
-          `HTTP token refresh failed for ${scope.resource}: ${result.error.message}. Browser login required.`,
-          { suggestions: ['Call teams_login to re-authenticate via browser'] }
-        ));
+        authFailure = result.error;
       }
-      // For other errors (network, timeout), log and continue with remaining scopes
+      // Scope-specific failures must not discard other refreshed credentials.
       log.warn('token-refresh-http', `Failed to refresh ${scope.resource}: ${result.error.message}`);
       scopeErrors.push(`${scope.resource}: ${result.error.message}`);
       continue;
@@ -707,6 +719,7 @@ export async function refreshTokensViaHttp(): Promise<Result<HttpRefreshResult>>
   }
 
   if (tokensRefreshed === 0) {
+    if (authFailure) return err(authFailure);
     return err(createError(
       ErrorCode.UNKNOWN,
       `HTTP token refresh failed: ${scopeErrors.length} of ${REFRESH_SCOPES.length} scopes failed. ${scopeErrors.join('; ')}`,
@@ -757,12 +770,20 @@ export async function getSharePointToken(origin: string, forceRefresh = false): 
     return err(createError(ErrorCode.INVALID_INPUT, 'Expected a SharePoint HTTPS origin'));
   }
   const state = readSessionState();
-  const storage = state && getTeamsOrigin(state)?.localStorage;
-  if (!state || !storage) return err(createError(ErrorCode.AUTH_REQUIRED, 'No Teams session found'));
-  const cached = findAccessTokenKey(storage, `${origin}/`);
-  if (!forceRefresh && cached && Number(cached.entry.expiresOn) > Date.now() / 1000 + 60) {
-    return ok(cached.entry.secret);
+  if (!state) return err(createError(ErrorCode.AUTH_REQUIRED, 'No Teams session found'));
+  const candidates = [getTeamsOrigin(state), ...state.origins.filter(item =>
+    ['https://teams.microsoft.com', 'https://teams.cloud.microsoft',
+      'https://teams.microsoft.us', 'https://dod.teams.microsoft.us'].includes(item.origin)
+  )];
+  if (!forceRefresh) {
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      const cached = findAccessTokenKey(candidate.localStorage, `${origin}/`);
+      if (cached && Number(cached.entry.expiresOn) > Date.now() / 1000 + 60) return ok(cached.entry.secret);
+    }
   }
+  const storage = getRefreshTokenOrigin(state)?.localStorage;
+  if (!storage) return err(createError(ErrorCode.AUTH_REQUIRED, 'No Teams session found'));
   const extraction = extractMsalCacheInfoWithDiagnostics(state);
   if (!extraction.cacheInfo) return err(createError(ErrorCode.AUTH_REQUIRED, 'No MSAL refresh token found'));
   const info = extraction.cacheInfo;

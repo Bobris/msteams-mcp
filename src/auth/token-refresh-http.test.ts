@@ -146,6 +146,23 @@ describe('refreshTokensViaHttp', () => {
     vi.unstubAllGlobals();
   });
 
+  it.each(['invalid_scope', 'invalid_grant'])('preserves successful tokens and rotation when Graph returns %s', async error => {
+    const state = makeMockSessionState();
+    vi.mocked(readSessionState).mockReturnValue(state);
+    vi.mocked(getTeamsOrigin).mockReturnValue(state.origins[0]);
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (String(url).includes('authsvc')) return new Response(JSON.stringify({ tokens: { skypeToken: 'fresh-skype', expiresIn: 3600 } }));
+      const scope = new URLSearchParams(String(init?.body)).get('scope')!;
+      if (scope.includes('graph.microsoft.com')) return new Response(JSON.stringify({ error }), { status: 400 });
+      return new Response(JSON.stringify(makeTokenResponse(scope)));
+    });
+    const result = await refreshTokensViaHttp();
+    expect(result).toMatchObject({ ok: true, value: { tokensRefreshed: 3, refreshTokenRotated: true, skypeTokenRefreshed: true } });
+    expect(writeSessionState).toHaveBeenCalledWith(state);
+    const refresh = state.origins[0].localStorage.map(item => JSON.parse(item.value)).find(entry => entry.credentialType === 'RefreshToken');
+    expect(refresh.secret).toBe('new-refresh-token');
+  });
+
   it('returns AUTH_REQUIRED when no session state exists', async () => {
     vi.mocked(readSessionState).mockReturnValue(null);
 
@@ -458,6 +475,26 @@ describe('getSharePointToken', () => {
     session();
     expect(await getSharePointToken(origin)).toEqual({ ok: true, value: 'old-access-token' });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('reads a valid token on the new Teams origin even when refresh credentials remain on the old one', async () => {
+    const state = session(-100);
+    state.origins.push({ origin: 'https://teams.cloud.microsoft', localStorage: [makeAccessTokenEntry(origin, `${origin}/.default`)] });
+    expect(await getSharePointToken(origin)).toEqual({ ok: true, value: 'old-access-token' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('finds refresh credentials on the old origin when the preferred new origin has none', async () => {
+    const state = session(-100);
+    const current = { origin: 'https://teams.cloud.microsoft', localStorage: [] };
+    state.origins.push(current);
+    vi.mocked(getTeamsOrigin).mockReturnValue(current);
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(makeTokenResponse(`${origin}/.default`))));
+    expect((await getSharePointToken(origin)).ok).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const entries = state.origins[0].localStorage.map(item => JSON.parse(item.value));
+    expect(entries.find(item => item.credentialType === 'RefreshToken').secret).toBe('new-refresh-token');
+    expect(current.localStorage).toHaveLength(0);
   });
 
   it('refreshes an expired token and persists token rotation', async () => {
