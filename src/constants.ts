@@ -264,3 +264,6 @@ export const STANDARD_EMOJIS: readonly StandardEmoji[] = [
 export const UPLOAD_CHUNK_BYTES = 5 * 1024 * 1024;
 /** Bound the upload's local file read-ahead independently of fragment/file size. */
 export const UPLOAD_READ_BYTES = 64 * 1024;
+
+/** Cancel a file download after 30 seconds without progress. */
+export const DOWNLOAD_INACTIVITY_TIMEOUT_MS = 30_000;

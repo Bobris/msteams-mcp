@@ -306,10 +306,11 @@ async function refreshAccessToken(
       // Specific error codes that indicate the refresh token is invalid/expired
       const isAuthError = ['invalid_grant', 'interaction_required', 'login_required'].includes(oauthError);
 
+      const isAccessDenied = ['invalid_scope', 'unauthorized_client', 'access_denied', 'consent_required'].includes(oauthError);
       return err(createError(
-        isAuthError ? ErrorCode.AUTH_EXPIRED : ErrorCode.UNKNOWN,
+        isAuthError ? ErrorCode.AUTH_EXPIRED : isAccessDenied ? ErrorCode.ACCESS_DENIED : ErrorCode.UNKNOWN,
         `Token refresh failed: ${errorDetail}`,
-        { retryable: !isAuthError }
+        { retryable: !isAuthError && !isAccessDenied }
       ));
     }
 
@@ -614,7 +615,7 @@ function updateAuthTokenCookie(
  * Falls back to browser-based refresh if this fails (e.g., refresh token
  * expired, Conditional Access policy requires interactive auth).
  */
-export async function refreshTokensViaHttp(): Promise<Result<HttpRefreshResult>> {
+export async function refreshTokensViaHttp(resource?: 'graph'): Promise<Result<HttpRefreshResult>> {
   // Read current session state
   const state = readSessionState();
   if (!state) {
@@ -676,7 +677,8 @@ export async function refreshTokensViaHttp(): Promise<Result<HttpRefreshResult>>
   let currentRefreshToken = cacheInfo.refreshToken;
 
   // Refresh each scope
-  for (const scope of REFRESH_SCOPES) {
+  const scopes = resource === 'graph' ? REFRESH_SCOPES.filter(scope => scope.resource === 'graph.microsoft.com') : REFRESH_SCOPES;
+  for (const scope of scopes) {
     const result = await refreshAccessToken(
       cacheInfo.tenantId,
       cacheInfo.clientId,
@@ -685,6 +687,7 @@ export async function refreshTokensViaHttp(): Promise<Result<HttpRefreshResult>>
     );
 
     if (!result.ok) {
+      if (resource === 'graph') return result;
       if (result.error.code === ErrorCode.AUTH_EXPIRED) {
         authFailure = result.error;
       }
@@ -722,7 +725,7 @@ export async function refreshTokensViaHttp(): Promise<Result<HttpRefreshResult>>
     if (authFailure) return err(authFailure);
     return err(createError(
       ErrorCode.UNKNOWN,
-      `HTTP token refresh failed: ${scopeErrors.length} of ${REFRESH_SCOPES.length} scopes failed. ${scopeErrors.join('; ')}`,
+      `HTTP token refresh failed: ${scopeErrors.length} of ${scopes.length} scopes failed. ${scopeErrors.join('; ')}`,
       { retryable: true }
     ));
   }

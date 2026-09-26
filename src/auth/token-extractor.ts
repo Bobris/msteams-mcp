@@ -8,6 +8,7 @@
 
 import {
   readSessionState,
+  writeSessionState,
   readTokenCache,
   writeTokenCache,
   clearTokenCache,
@@ -929,4 +930,20 @@ export function discoverConfig(state?: SessionState): DiscoveredConfig | null {
       uniqueHosts,
     };
   });
+}
+
+/** Discard only a rejected access token, preserving all other session credentials. */
+export function invalidateAccessToken(token: string): void {
+  const state = readSessionState();
+  if (!state) return;
+  for (const origin of state.origins) {
+    origin.localStorage = origin.localStorage.filter(item => {
+      try {
+        const entry = JSON.parse(item.value);
+        return entry.credentialType !== 'AccessToken' || entry.secret !== token;
+      } catch { return true; }
+    });
+  }
+  writeSessionState(state);
+  clearTokenCache();
 }

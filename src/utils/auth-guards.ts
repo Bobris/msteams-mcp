@@ -9,6 +9,7 @@ import { ErrorCode, createError, type McpError } from '../types/errors.js';
 import { type Result, err, ok } from '../types/result.js';
 import {
   getValidSubstrateToken,
+  getValidGraphToken,
   extractMessageAuth,
   extractCsaToken,
   extractSubstrateToken,
@@ -20,7 +21,7 @@ import {
   type RegionConfig,
 } from '../auth/token-extractor.js';
 import { TOKEN_REFRESH_THRESHOLD_MS } from '../constants.js';
-import { refreshTokensViaBrowser } from '../auth/token-refresh.js';
+import { refreshTokensViaBrowser, refreshGraphToken } from '../auth/token-refresh.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error Messages
@@ -242,6 +243,22 @@ export function getTeamsBaseUrl(): string {
 }
 
 /**
+ * Gets the CSA (chatsvcagg) region from session config.
+ *
+ * CSA is not always routed like chatsvc: some tenants get a country-level
+ * chatsvc region (e.g. "fr") while CSA lives under the wider region ("emea").
+ * DISCOVER-REGION-GTM carries the CSA URL explicitly, so prefer it and only
+ * fall back to the chatsvc region when it is absent.
+ */
+export function getCsaRegion(): string {
+  if (cachedRegionConfig === undefined) {
+    cachedRegionConfig = extractRegionConfig();
+  }
+  const match = cachedRegionConfig?.csaServiceUrl.match(/\/api\/csa\/([a-z]+)$/);
+  return match?.[1] ?? getRegion();
+}
+
+/**
  * Gets the full region config including partition and URLs.
  * 
  * Returns null if no valid session - caller should handle auth error.
@@ -256,6 +273,8 @@ export function getRegionConfig(): RegionConfig | null {
 /** API config with region and base URL for constructing API endpoints. */
 export interface ApiConfig {
   region: string;
+  /** Region segment for CSA URLs; may differ from the chatsvc region. */
+  csaRegion: string;
   baseUrl: string;
 }
 
@@ -295,6 +314,7 @@ export function requireMessageAuthWithConfig(): Result<MessageAuthWithConfig, Mc
 export function getApiConfig(): ApiConfig {
   return {
     region: getRegion(),
+    csaRegion: getCsaRegion(),
     baseUrl: getTeamsBaseUrl(),
   };
 }
@@ -329,4 +349,15 @@ export function getTenantId(): string | null {
   const tid = profile?.tenantId ?? null;
   cachedTenantId = tid;
   return tid;
+}
+
+let pendingGraphToken: Promise<Result<string, McpError>> | undefined;
+/** Require optional Graph access without invoking Teams auto-login. */
+export async function requireGraphTokenAsync(): Promise<Result<string, McpError>> {
+  const token = getValidGraphToken();
+  if (token) return ok(token);
+  if (!pendingGraphToken) {
+    pendingGraphToken = refreshGraphToken().finally(() => { pendingGraphToken = undefined; });
+  }
+  return pendingGraphToken;
 }

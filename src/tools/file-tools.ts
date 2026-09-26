@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { RegisteredTool, ToolContext, ToolResult } from './index.js';
 import { handleApiResult } from './index.js';
-import { downloadFile } from '../api/download-api.js';
+import { downloadFile } from '../api/graph-files-api.js';
 import { getSharedFiles } from '../api/files-api.js';
 import { uploadFile } from '../api/sharepoint-api.js';
 import {
@@ -135,7 +135,7 @@ export const DownloadFileInputSchema = z.object({
 export const downloadFileTool: RegisteredTool<typeof DownloadFileInputSchema> = {
   definition: {
     name: 'teams_download_file',
-    description: 'Download a file using its webUrl from teams_get_shared_files and the current Teams session. Supports direct SharePoint/OneDrive for Business file URLs, including chat uploads and channel files; arbitrary Link items and short sharing links are not supported. Saves raw bytes to an absolute path on the MCP server machine and returns file name, size, content type and SHA-256. Parent directory must exist; existing files are never overwritten. Streams directly to disk with no fixed file-size limit. Stalled transfers time out after 30 seconds without progress; failed transfers remove the partial file. For long downloads, increase your MCP client tool timeout.',
+    description: 'Download a Teams file using a SharePoint/OneDrive webUrl from teams_get_shared_files, a sharing or Doc.aspx viewer link, or a Microsoft Graph drive-item URL. Saves raw bytes to an absolute local outputPath and returns fileName, size, content type and SHA-256. Parent directory must exist; existing files are never overwritten. Streams to disk without a fixed size limit and cancels after 30 seconds without progress, removing incomplete files. Respects owner download blocks. Uses optional Microsoft Graph access from the Teams session; a Graph access failure does not trigger Teams login. For long downloads, increase the MCP client tool timeout.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -146,7 +146,7 @@ export const downloadFileTool: RegisteredTool<typeof DownloadFileInputSchema> = 
     },
   },
   schema: DownloadFileInputSchema,
-  handler: async (input) => handleApiResult(await downloadFile(input.url, input.outputPath), value => ({ ...value })),
+  handler: async (input) => handleApiResult(await downloadFile(input.url, input.outputPath), value => ({ fileName: value.name, outputPath: value.outputPath, size: value.size, contentType: value.contentType, sha256: value.sha256 })),
 };
 
 export const uploadFileTool: RegisteredTool<typeof UploadFileInputSchema> = {

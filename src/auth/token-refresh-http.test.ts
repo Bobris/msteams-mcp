@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ErrorCode } from '../types/errors.js';
 
 // We need to mock the session-store and token-extractor modules
 // before importing the module under test.
@@ -144,6 +145,32 @@ describe('refreshTokensViaHttp', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it('refreshes only Graph on demand and preserves the core session credentials', async () => {
+    const state = makeMockSessionState();
+    vi.mocked(readSessionState).mockReturnValue(state);
+    vi.mocked(getTeamsOrigin).mockReturnValue(state.origins[0]);
+    const cookies = structuredClone(state.cookies);
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(makeTokenResponse('https://graph.microsoft.com/.default'))));
+
+    expect(await refreshTokensViaHttp('graph')).toMatchObject({
+      ok: true, value: { tokensRefreshed: 1, skypeTokenRefreshed: false, refreshTokenRotated: true },
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = new URLSearchParams(String(vi.mocked(fetch).mock.calls[0][1]?.body));
+    expect(body.get('scope')).toBe('https://graph.microsoft.com/.default offline_access');
+    expect(state.cookies).toEqual(cookies);
+    expect(writeSessionState).toHaveBeenCalledWith(state);
+  });
+
+  it('reports denied optional Graph scopes without requesting a core login', async () => {
+    const state = makeMockSessionState();
+    vi.mocked(readSessionState).mockReturnValue(state);
+    vi.mocked(getTeamsOrigin).mockReturnValue(state.origins[0]);
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ error: 'invalid_scope' }), { status: 400 }));
+    expect(await refreshTokensViaHttp('graph')).toMatchObject({ ok: false, error: { code: ErrorCode.ACCESS_DENIED, retryable: false } });
+    expect(writeSessionState).not.toHaveBeenCalled();
   });
 
   it.each(['invalid_scope', 'invalid_grant'])('preserves successful tokens and rotation when Graph returns %s', async error => {

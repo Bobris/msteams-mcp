@@ -23,6 +23,7 @@ import { ErrorCode, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
 import {
   extractSubstrateToken,
+  getValidGraphToken,
   clearTokenCache,
 } from './token-extractor.js';
 import { refreshTokensViaHttp } from './token-refresh-http.js';
@@ -52,7 +53,7 @@ let refreshInProgress = false;
  * 2. If HTTP fails, fall back to headless browser refresh (~8s)
  * 3. If both fail, return error directing to teams_login
  */
-export async function refreshTokensViaBrowser(browserOnly = false): Promise<Result<TokenRefreshResult>> {
+async function refreshCoreTokens(browserOnly = false): Promise<Result<TokenRefreshResult>> {
   // Prevent concurrent refresh attempts
   if (refreshInProgress) {
     return err(createError(
@@ -200,4 +201,40 @@ async function refreshTokensViaBrowserImpl(
       `Token refresh via browser failed: ${message}. Call teams_login to re-authenticate.`,
     ));
   }
+}
+
+// Core and optional refreshes both replace session state; serialize them.
+let refreshQueue: Promise<unknown> = Promise.resolve();
+function serializeRefresh<T>(refresh: () => Promise<T>): Promise<T> {
+  const pending = refreshQueue.then(refresh, refresh);
+  refreshQueue = pending.then(() => undefined, () => undefined);
+  return pending;
+}
+
+const coreRefreshes = new Map<boolean, Promise<Result<TokenRefreshResult>>>();
+export function refreshTokensViaBrowser(browserOnly = false): Promise<Result<TokenRefreshResult>> {
+  let pending = coreRefreshes.get(browserOnly);
+  if (!pending) {
+    pending = serializeRefresh(() => refreshCoreTokens(browserOnly))
+      .finally(() => { coreRefreshes.delete(browserOnly); });
+    coreRefreshes.set(browserOnly, pending);
+  }
+  return pending;
+}
+
+/** Optional Graph access never opens a browser or triggers core Teams login. */
+export function refreshGraphToken(): Promise<Result<string>> {
+  return serializeRefresh(async () => {
+    const result = await refreshTokensViaHttp('graph');
+    if (!result.ok) {
+      if (result.error.code === ErrorCode.AUTH_REQUIRED || result.error.code === ErrorCode.AUTH_EXPIRED) {
+        return err(createError(ErrorCode.AUTH_INTERACTION_REQUIRED,
+          `Microsoft Graph could not be authorized: ${result.error.message}`, { retryable: false }));
+      }
+      return result;
+    }
+    const token = getValidGraphToken();
+    return token ? ok(token) : err(createError(ErrorCode.API_ERROR,
+      'Microsoft Graph token exchange did not return a valid token.', { retryable: false }));
+  });
 }
