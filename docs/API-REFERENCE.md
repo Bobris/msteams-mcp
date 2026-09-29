@@ -1816,6 +1816,24 @@ The `TranscriptJson` field is a JSON string containing the full transcript:
 
 ## Files & Attachments
 
+### Inline message images (ASM)
+
+Chatsvc message `content` can include `<img itemtype="http://schema.skype.com/AMSImage"
+src="https://eu-api.asm.skype.com/v1/objects/{objectId}/views/imgo" ...>`.
+This HTML is separate from `properties.files` and the Substrate shared-files list.
+Extract image metadata before stripping message HTML.
+
+The image view is fetched with `Authorization: skype_token {skypetoken_asm}`.
+The implementation uses existing message authentication, validates the ASM host
+and image-view path, and disables redirects before sending the token. It does
+not forward chatsvc cookies, Graph tokens, or arbitrary user-supplied URL credentials.
+The response MIME type may differ from the HTML `itemscope` image label.
+
+`teams_get_message` and `teams_get_thread` expose the `images` array;
+`teams_download_image` resolves an image by conversation/message/index and streams
+it to an exclusively created local file with SHA-256 metadata. Government-cloud
+or other image hosts are reported as unsupported until their endpoints are verified.
+
 ### Files Shared in Conversation
 
 **Endpoint:** `GET https://substrate.office.com/AllFiles/api/users('OID:{userId}@{tenantId}')/AllShared?ThreadId={conversationId}&ItemTypes=File&ItemTypes=Link&PageSize=25`

@@ -5,6 +5,7 @@
  * Conversation properties and participant extraction.
  */
 
+import { extractImages, type MessageImage } from '../utils/parsers-images.js';
 import { httpRequest } from '../utils/http.js';
 import { CHATSVC_API, getMessagingHeaders, getSkypeAuthHeaders } from '../utils/api-config.js';
 import { ErrorCode, createError } from '../types/errors.js';
@@ -46,6 +47,7 @@ export interface ThreadMessage {
   isFromMe?: boolean;
   messageLink?: string;
   links?: ExtractedLink[];
+  images?: MessageImage[];
   /** For channel messages: the ID of the thread root post (if this is a reply within a thread) */
   threadRootId?: string;
   /** True if this message is a reply within a channel thread (not a top-level post) */
@@ -395,6 +397,7 @@ export async function getMessage(
     : undefined;
 
   const links = extractLinks(content);
+  const images = extractImages(content);
   const when = formatHumanReadableDate(timestamp);
 
   const { reactions, reactionSummary } = parseReactions(msg);
@@ -417,6 +420,7 @@ export async function getMessage(
     isFromMe: fromMri === auth.userMri,
     messageLink,
     links: links.length > 0 ? links : undefined,
+    images: images.length > 0 ? images : undefined,
     threadRootId: isThreadReply ? rootMessageId : undefined,
     isThreadReply: isThreadReply || undefined,
     reactions,
@@ -522,6 +526,7 @@ export async function getThreadMessages(
 
     // Extract links before stripping HTML
     const links = extractLinks(content);
+    const images = extractImages(content);
 
     // Format human-readable date with day of week to help LLMs
     const when = formatHumanReadableDate(timestamp);
@@ -543,6 +548,7 @@ export async function getThreadMessages(
       isFromMe: fromMri === auth.userMri,
       messageLink,
       links: links.length > 0 ? links : undefined,
+      images: images.length > 0 ? images : undefined,
       threadRootId: isThreadReply ? rootMessageId : undefined,
       isThreadReply: isThreadReply || undefined,
       reactions,

@@ -201,6 +201,7 @@ See [CLI Usage](#cli-usage) for commands.
 | Tool                     | Description                                                        |
 | ------------------------ | ------------------------------------------------------------------ |
 | `teams_get_shared_files` | Get files and links shared in a conversation (supports pagination) |
+| `teams_download_image` | Download an inline image using its conversation, message and image index |
 | `teams_upload_file` | Upload a local file to OneDrive and attach to messages |
 
 
@@ -420,3 +421,32 @@ limiting the whole file's transfer time. Increase your MCP client's tool-call
 timeout for large uploads. Failed transfers attempt to cancel the upload session;
 replaying a partially consumed request stream is disabled. Interrupted uploads
 currently restart from the beginning on a new tool call.
+
+### Inline chat images
+
+Inline screenshots are stored in Teams ASM, separately from the SharePoint files
+returned by `teams_get_shared_files`. `teams_get_message` and `teams_get_thread`
+now return an optional `images` array with `index` (zero-based), `url`, `alt`,
+HTML display `width`/`height`, and `downloadable`. Read a conversation with
+`teams_get_thread`, then use a message ID and image index to download its image:
+
+```sh
+npm run cli -- download_image \
+  --conversationId '19:YOUR_CHAT@thread.v2' \
+  --messageId 'MESSAGE_ID' \
+  --imageIndex 0 \
+  --outputPath /absolute/path/screenshot.jpg
+```
+
+The tool re-reads the message to resolve the image, uses the existing Teams
+session (no Graph permissions), and returns `outputPath`, `contentType`, byte
+`size`, and `sha256`. The server response MIME type is authoritative: an HTML
+`itemscope="png"` can still reference a JPEG. Display dimensions are not original
+pixel dimensions. No image conversion occurs. Parent directories must exist;
+files are created exclusively and incomplete downloads are removed. Transfers
+stream to disk with a 30-second inactivity timeout and reject redirects.
+
+Currently downloads support HTTPS ASM image-view endpoints on `asm.skype.com`
+and its direct regional subdomains. Other inline image URLs remain discoverable
+with `downloadable: false`; no session credentials are sent to those URLs.
+SharePoint file attachments continue to use `teams_download_file`.

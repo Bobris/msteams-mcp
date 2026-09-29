@@ -501,7 +501,7 @@ const getFollowedThreadsToolDefinition: Tool = {
 
 const getMessageToolDefinition: Tool = {
   name: 'teams_get_message',
-  description: 'Get a single message by ID with full content. Works for messages of any age - no retention limit. Includes reactions (individual reactors) and reactionSummary (counts per emoji) when present. Use this to resolve truncated search results, saved message stubs, or retrieve any specific message when you have the conversationId and messageId.',
+  description: 'Get a single message by ID with full content. Includes inline images with index, URL, alt text, dimensions and downloadable flag; use teams_download_image to save supported Teams images. Works for messages of any age - no retention limit. Includes reactions (individual reactors) and reactionSummary (counts per emoji) when present. Use this to resolve truncated search results, saved message stubs, or retrieve any specific message when you have the conversationId and messageId.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1112,6 +1112,7 @@ async function handleGetMessage(
       isFromMe: msg.isFromMe,
       messageLink: msg.messageLink,
       links: msg.links,
+      images: msg.images,
       threadRootId: msg.threadRootId,
       isThreadReply: msg.isThreadReply,
       reactions: msg.reactions,

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { RegisteredTool, ToolContext, ToolResult } from './index.js';
 import { handleApiResult } from './index.js';
+import { downloadImage } from '../api/images-api.js';
 import { downloadFile } from '../api/graph-files-api.js';
 import { getSharedFiles } from '../api/files-api.js';
 import { uploadFile } from '../api/sharepoint-api.js';
@@ -34,7 +35,7 @@ export const UploadFileInputSchema = z.object({
 
 const getSharedFilesToolDefinition: Tool = {
   name: 'teams_get_shared_files',
-  description: 'Get files and links shared in a Teams conversation. Returns file names, URLs, extensions, sizes, and who shared them. Works for channels, group chats, 1:1 chats, and meeting chats. Use the conversationId from other tools (teams_get_favorites, teams_search, teams_find_channel, teams_get_chat). Supports pagination via skipToken for conversations with many files. Pass a File item webUrl to teams_download_file to download its contents.',
+  description: 'Get files and links shared in a Teams conversation. Inline images are separate: use teams_get_thread or teams_get_message and teams_download_image. Returns file names, URLs, extensions, sizes, and who shared them. Works for channels, group chats, 1:1 chats, and meeting chats. Use the conversationId from other tools (teams_get_favorites, teams_search, teams_find_channel, teams_get_chat). Supports pagination via skipToken for conversations with many files. Pass a File item webUrl to teams_download_file to download its contents.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -155,5 +156,31 @@ export const uploadFileTool: RegisteredTool<typeof UploadFileInputSchema> = {
   handler: handleUploadFile,
 };
 
+export const DownloadImageInputSchema = z.object({
+  conversationId: z.string().min(1),
+  messageId: z.string().min(1),
+  imageIndex: z.number().int().min(0).default(0),
+  outputPath: z.string().min(1),
+});
+
+export const downloadImageTool: RegisteredTool<typeof DownloadImageInputSchema> = {
+  definition: {
+    name: 'teams_download_image',
+    description: 'Download an inline image from a Teams message. First read teams_get_message or teams_get_thread: their images array includes a zero-based index and downloadable flag. Re-fetches the message and downloads the selected Teams ASM image with existing Teams authentication, without Graph access. Saves original response bytes to an absolute local outputPath; parent directory must exist and existing files are never overwritten. Returns contentType, size and SHA-256. Redirects and unsupported image hosts are rejected; interrupted downloads are removed. The file extension should match the returned contentType, not the HTML image label.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        conversationId: { type: 'string', description: 'Conversation containing the image message.' },
+        messageId: { type: 'string', description: 'Message id returned by teams_get_message or teams_get_thread.' },
+        imageIndex: { type: 'integer', minimum: 0, default: 0, description: 'Zero-based index from the message images array (default 0).' },
+        outputPath: { type: 'string', description: 'Absolute destination path on the MCP server machine; must not exist.' },
+      },
+      required: ['conversationId', 'messageId', 'outputPath'],
+    },
+  },
+  schema: DownloadImageInputSchema,
+  handler: async input => handleApiResult(await downloadImage(input.conversationId, input.messageId, input.imageIndex, input.outputPath), value => ({ ...value })),
+};
+
 /** All file-related tools. */
-export const fileTools = [getSharedFilesTool, downloadFileTool, uploadFileTool];
+export const fileTools = [getSharedFilesTool, downloadFileTool, downloadImageTool, uploadFileTool];

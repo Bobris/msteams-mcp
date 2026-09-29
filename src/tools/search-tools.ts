@@ -87,7 +87,7 @@ const searchToolDefinition: Tool = {
 
 const getThreadToolDefinition: Tool = {
   name: 'teams_get_thread',
-  description: 'Get messages from a Teams conversation/thread. Default: newest-first (latest messages at top). For channels: messages include isThreadReply (true for replies) and threadRootId (ID of the post being replied to). Messages without threadRootId are top-level posts. Use threadRootId to group related messages. Messages include reactions (individual reactors, names resolved where possible) and reactionSummary (counts per emoji) when present. Each message includes a "when" field with the day of week (e.g., "Friday, January 30, 2026, 10:45 AM UTC"). Returns unread count and can optionally mark as read.',
+  description: 'Get messages from a Teams conversation/thread. Includes inline images with index, URL, alt text, dimensions and downloadable flag; use teams_download_image to save supported Teams images. Default: newest-first (latest messages at top). For channels: messages include isThreadReply (true for replies) and threadRootId (ID of the post being replied to). Messages without threadRootId are top-level posts. Use threadRootId to group related messages. Messages include reactions (individual reactors, names resolved where possible) and reactionSummary (counts per emoji) when present. Each message includes a "when" field with the day of week (e.g., "Friday, January 30, 2026, 10:45 AM UTC"). Returns unread count and can optionally mark as read.',
   inputSchema: {
     type: 'object',
     properties: {
